@@ -40,6 +40,8 @@ import ModelSettingsSection from "./components/ModelSettingsSection";
 import { extractHtml } from "./components/preview/extractHtml";
 import useBrowserTabIndicator from "./hooks/useBrowserTabIndicator";
 import TipLink from "./components/core/TipLink";
+import SelectAndEditModeToggleButton from "./components/select-and-edit/SelectAndEditModeToggleButton";
+import { useAppStore } from "./store/app-store";
 
 const IS_OPENAI_DOWN = false;
 
@@ -54,16 +56,19 @@ function App() {
   const [updateInstruction, setUpdateInstruction] = useState("");
   const [isImportedFromCode, setIsImportedFromCode] = useState<boolean>(false);
 
+  const { disableInSelectAndEditMode } = useAppStore();
+
   // Settings
   const [settings, setSettings] = usePersistedState<Settings>(
     {
       openAiApiKey: null,
       openAiBaseURL: null,
+      anthropicApiKey: null,
       screenshotOneApiKey: null,
       isImageGenerationEnabled: true,
       editorTheme: EditorTheme.COBALT,
       generatedCodeConfig: Stack.HTML_TAILWIND,
-      codeGenerationModel: CodeGenerationModel.GPT_4_TURBO_2024_04_09,
+      codeGenerationModel: CodeGenerationModel.CLAUDE_3_5_SONNET_2024_06_20,
       // Only relevant for hosted version
       isTermOfServiceAccepted: false,
     },
@@ -88,6 +93,19 @@ function App() {
     selectedCodeGenerationModel ===
       CodeGenerationModel.GPT_4_TURBO_2024_04_09 &&
     settings.generatedCodeConfig === Stack.REACT_TAILWIND;
+
+  const showBetterModelMessage =
+    selectedCodeGenerationModel !== CodeGenerationModel.GPT_4O_2024_05_13 &&
+    selectedCodeGenerationModel !==
+      CodeGenerationModel.CLAUDE_3_5_SONNET_2024_06_20 &&
+    appState === AppState.INITIAL;
+
+  const showSelectAndEditFeature =
+    (selectedCodeGenerationModel === CodeGenerationModel.GPT_4O_2024_05_13 ||
+      selectedCodeGenerationModel ===
+        CodeGenerationModel.CLAUDE_3_5_SONNET_2024_06_20) &&
+    (settings.generatedCodeConfig === Stack.HTML_TAILWIND ||
+      settings.generatedCodeConfig === Stack.HTML_CSS);
 
   // Indicate coding state using the browser tab's favicon and title
   useBrowserTabIndicator(appState === AppState.CODING);
@@ -144,6 +162,7 @@ function App() {
     setAppHistory([]);
     setCurrentVersion(null);
     setShouldIncludeResultImage(false);
+    disableInSelectAndEditMode();
   };
 
   const regenerate = () => {
@@ -232,7 +251,9 @@ function App() {
                 parentIndex: parentVersion,
                 code,
                 inputs: {
-                  prompt: updateInstruction,
+                  prompt: params.history
+                    ? params.history[params.history.length - 1]
+                    : updateInstruction,
                 },
               },
             ];
@@ -274,7 +295,15 @@ function App() {
   }
 
   // Subsequent updates
-  async function doUpdate() {
+  async function doUpdate(
+    updateInstruction: string,
+    selectedElement?: HTMLElement
+  ) {
+    if (updateInstruction.trim() === "") {
+      toast.error("Please include some instructions for AI on what to update.");
+      return;
+    }
+
     if (currentVersion === null) {
       toast.error(
         "No current version set. Contact support or open a Github issue."
@@ -292,7 +321,17 @@ function App() {
       return;
     }
 
-    const updatedHistory = [...historyTree, updateInstruction];
+    let modifiedUpdateInstruction = updateInstruction;
+
+    // Send in a reference to the selected element if it exists
+    if (selectedElement) {
+      modifiedUpdateInstruction =
+        updateInstruction +
+        " referring to this element specifically: " +
+        selectedElement.outerHTML;
+    }
+
+    const updatedHistory = [...historyTree, modifiedUpdateInstruction];
 
     if (shouldIncludeResultImage) {
       const resultImage = await takeScreenshot();
@@ -403,6 +442,15 @@ function App() {
             </div>
           )}
 
+          {showBetterModelMessage && (
+            <div className="rounded-lg p-2 bg-fuchsia-200">
+              <p className="text-gray-800 text-sm">
+                Now supporting GPT-4o and Claude Sonnet 3.5. Higher quality and
+                2x faster. Give it a try!
+              </p>
+            </div>
+          )}
+
           {appState !== AppState.CODE_READY && <TipLink />}
 
           {IS_RUNNING_ON_CLOUD && !settings.openAiApiKey && <OnboardingNote />}
@@ -468,8 +516,8 @@ function App() {
                       />
                     </div>
                     <Button
-                      onClick={doUpdate}
-                      className="dark:text-white dark:bg-gray-700"
+                      onClick={() => doUpdate(updateInstruction)}
+                      className="dark:text-white dark:bg-gray-700 update-btn"
                     >
                       Update
                     </Button>
@@ -477,10 +525,13 @@ function App() {
                   <div className="flex items-center justify-end gap-x-2 mt-2">
                     <Button
                       onClick={regenerate}
-                      className="flex items-center gap-x-2 dark:text-white dark:bg-gray-700"
+                      className="flex items-center gap-x-2 dark:text-white dark:bg-gray-700 regenerate-btn"
                     >
                       🔄 Regenerate
                     </Button>
+                    {showSelectAndEditFeature && (
+                      <SelectAndEditModeToggleButton />
+                    )}
                   </div>
                   <div className="flex justify-end items-center mt-2">
                     <TipLink />
@@ -586,7 +637,7 @@ function App() {
                       <Button
                         onClick={downloadCode}
                         variant="secondary"
-                        className="flex items-center gap-x-2 mr-4 dark:text-white dark:bg-gray-700"
+                        className="flex items-center gap-x-2 mr-4 dark:text-white dark:bg-gray-700 download-btn"
                       >
                         <FaDownload /> Download
                       </Button>
@@ -609,10 +660,18 @@ function App() {
                 </div>
               </div>
               <TabsContent value="desktop">
-                <Preview code={previewCode} device="desktop" />
+                <Preview
+                  code={previewCode}
+                  device="desktop"
+                  doUpdate={doUpdate}
+                />
               </TabsContent>
               <TabsContent value="mobile">
-                <Preview code={previewCode} device="mobile" />
+                <Preview
+                  code={previewCode}
+                  device="mobile"
+                  doUpdate={doUpdate}
+                />
               </TabsContent>
               <TabsContent value="code">
                 <CodeTab

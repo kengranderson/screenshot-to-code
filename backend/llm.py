@@ -1,3 +1,4 @@
+import base64
 from enum import Enum
 from typing import Any, Awaitable, Callable, List, cast
 from anthropic import AsyncAnthropic
@@ -5,6 +6,7 @@ from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionChunk
 from config import IS_DEBUG_ENABLED
 from debug.DebugFileWriter import DebugFileWriter
+from image_processing.utils import process_image
 
 from utils import pprint_prompt
 
@@ -13,9 +15,11 @@ from utils import pprint_prompt
 class Llm(Enum):
     GPT_4_VISION = "gpt-4-vision-preview"
     GPT_4_TURBO_2024_04_09 = "gpt-4-turbo-2024-04-09"
+    GPT_4O_2024_05_13 = "gpt-4o-2024-05-13"
     CLAUDE_3_SONNET = "claude-3-sonnet-20240229"
     CLAUDE_3_OPUS = "claude-3-opus-20240229"
     CLAUDE_3_HAIKU = "claude-3-haiku-20240307"
+    CLAUDE_3_5_SONNET_2024_06_20 = "claude-3-5-sonnet-20240620"
 
 
 # Will throw errors if you send a garbage string
@@ -47,16 +51,26 @@ async def stream_openai_response(
     }
 
     # Add 'max_tokens' only if the model is a GPT4 vision or Turbo model
-    if model == Llm.GPT_4_VISION or model == Llm.GPT_4_TURBO_2024_04_09:
+    if (
+        model == Llm.GPT_4_VISION
+        or model == Llm.GPT_4_TURBO_2024_04_09
+        or model == Llm.GPT_4O_2024_05_13
+    ):
         params["max_tokens"] = 4096
 
     stream = await client.chat.completions.create(**params)  # type: ignore
     full_response = ""
     async for chunk in stream:  # type: ignore
         assert isinstance(chunk, ChatCompletionChunk)
-        content = chunk.choices[0].delta.content or ""
-        full_response += content
-        await callback(content)
+        if (
+            chunk.choices
+            and len(chunk.choices) > 0
+            and chunk.choices[0].delta
+            and chunk.choices[0].delta.content
+        ):
+            content = chunk.choices[0].delta.content or ""
+            full_response += content
+            await callback(content)
 
     await client.close()
 
@@ -68,12 +82,12 @@ async def stream_claude_response(
     messages: List[ChatCompletionMessageParam],
     api_key: str,
     callback: Callable[[str], Awaitable[None]],
+    model: Llm,
 ) -> str:
 
     client = AsyncAnthropic(api_key=api_key)
 
     # Base parameters
-    model = Llm.CLAUDE_3_SONNET
     max_tokens = 4096
     temperature = 0.0
 
@@ -91,8 +105,10 @@ async def stream_claude_response(
                 # Extract base64 data and media type from data URL
                 # Example base64 data URL: data:image/png;base64,iVBOR...
                 image_data_url = cast(str, content["image_url"]["url"])
-                media_type = image_data_url.split(";")[0].split(":")[1]
-                base64_data = image_data_url.split(",")[1]
+
+                # Process image and split media type and data
+                # so it works with Claude (under 5mb in base64 encoding)
+                (media_type, base64_data) = process_image(image_data_url)
 
                 # Remove OpenAI parameter
                 del content["image_url"]
